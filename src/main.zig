@@ -21,9 +21,11 @@ pub fn main() !void {
 
     // Server Loop
     while (true) {
+        // Try to read from standard input
         stdin.readUntilDelimiterArrayList(&buffer, 0, 4.294967e9) catch |err| // TODO: Is there a way to not limit the max length?
-            if (err != error.EndOfStream) return err;
+            if (err != error.EndOfStream) return err; // Ignore EndOfStream errors, only propagate the rest.
 
+        // If we did read from stdin, but the amount of bytes read was 0 then don't parse the data 
         if (buffer.items.len == 0) continue;
 
         var maybe_payload: ?JsonPayload = io_parser.parse(buffer.items, &parser) catch |err| switch (err) {
