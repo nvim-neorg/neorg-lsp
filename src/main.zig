@@ -59,7 +59,7 @@ fn parse_request(request: MessageType) void {
 // End of TODO
 
 pub fn main() !void {
-    const stderr = std.io.getStdErr().writer();
+    // const stderr = std.io.getStdErr().writer();
     const stdin = std.io.getStdIn().reader();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -72,25 +72,6 @@ pub fn main() !void {
 
     // Server Loop
     while (true) {
-        var maybe_payload: ?JsonPayload = io_parser.parse(allocator, stdin, &parser) catch |err| switch (err) {
-            ParseError.NoContentLength => blk: {
-                try stderr.writeAll("Malformed payload: no `Content-Length` header found!");
-                break :blk null;
-            },
-            ParseError.NoJSON => blk: {
-                try stderr.writeAll("Malformed payload: no JSON content present!");
-                break :blk null;
-            },
-            ParseError.MalformedJSON => blk: {
-                try stderr.writeAll("Malformed payload: invalid JSON string!");
-                break :blk null;
-            },
-            else => return err,
-        };
-
-        if (maybe_payload) |payload| {
-            // check the type of payload received
-            _ = try parse_payload(payload);
-        }
+        try io_parser.parse(allocator, stdin, &parser);
     }
 }

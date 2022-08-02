@@ -1,57 +1,130 @@
 const std = @import("std");
 
-pub const ParseError = error{
-    NoContentLength,
-    EncodingIsNotUtf8,
-    NoJSON,
-    MalformedJSON,
+const TokenType = enum {
+    HeaderName,
+    HeaderDelimiter,
+    HeaderContent,
 
-    InvalidParameterType,
-    InvalidIDType,
+    CarriageReturn,
+    LineFeed,
+
+    Content,
 };
 
-pub const JsonPayload = struct {
-    ContentLength: usize,
-    ContentType: []const u8 = "application/vscode-jsonrpc; charset=utf-8",
-    Json: std.json.ValueTree,
+const Token = struct {
+    type: TokenType,
+    content: std.ArrayList(u8),
+
+    pub fn deinit(self: *Token) void {
+        self.content.deinit();
+    }
 };
 
-pub fn parse(allocator: std.mem.Allocator, stdin: std.fs.File.Reader, parser: *std.json.Parser) !?JsonPayload {
-    var payload: JsonPayload = .{
-        .ContentLength = undefined,
-        .Json = undefined,
-    };
+fn tokenizeInput(allocator: std.mem.Allocator, token_buffer: *std.ArrayList(Token), input: std.fs.File.Reader) !bool {
+    token_buffer.shrinkAndFree(0);
 
     var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
 
-    var has_content_length = false;
-    var has_json = false;
+    var current_token_type = TokenType.HeaderName;
+    var parse_content = false;
 
-    while (!has_content_length or !has_json) {
-        stdin.readUntilDelimiterArrayList(&buffer, '\n', comptime std.math.maxInt(usize)) catch |err|
-            if (err != error.EndOfStream) return err;
+    while (true) {
+        var next = input.readByte() catch break;
 
-        const content = buffer.items;
-
-        // An empty line is just `\r`, which has a length of one.
-        if (content.len <= 1) continue;
-
-        _ = try file.write(content);
-
-        if (std.mem.startsWith(u8, content, "Content-Length: ")) {
-            payload.ContentLength = try std.fmt.parseInt(usize, content["Content-Length: ".len .. content.len - 1], 10);
-            has_content_length = true;
+        if (parse_content) {
+            try buffer.append(next);
+            continue;
         }
-        else if (std.mem.startsWith(u8, content, "Content-Type: ")) payload.ContentType = content["Content-Type: ".len .. content.len - 1]
-        else { // Imagine trusting the Content-Length lol let's just ignore it here
-            has_json = true;
-            payload.Json = parser.parse(content) catch return ParseError.MalformedJSON;
+
+        switch (next) {
+            ':' => { // HACK: Zig doesn't have captures/closures, so we have to copy paste the code for now
+                try token_buffer.append(Token{
+                    .type = current_token_type,
+                    .content = try buffer.clone(),
+                });
+
+                current_token_type = TokenType.HeaderDelimiter;
+
+                buffer.shrinkAndFree(0);
+                try buffer.append(next);
+            },
+            '\r' => {
+                try token_buffer.append(Token{
+                    .type = current_token_type,
+                    .content = try buffer.clone(),
+                });
+
+                current_token_type = TokenType.CarriageReturn;
+
+                buffer.shrinkAndFree(0);
+                try buffer.append(next);
+            },
+            '\n' => {
+                try token_buffer.append(Token{
+                    .type = current_token_type,
+                    .content = try buffer.clone(),
+                });
+
+                current_token_type = TokenType.LineFeed;
+
+                buffer.shrinkAndFree(0);
+                try buffer.append(next);
+            },
+            '{' => parse_content = true,
+            else => switch (current_token_type) {
+                .HeaderDelimiter => {
+                    try token_buffer.append(Token{
+                        .type = current_token_type,
+                        .content = try buffer.clone(),
+                    });
+
+                    current_token_type = TokenType.HeaderContent;
+
+                    buffer.shrinkAndFree(0);
+                    try buffer.append(next);
+                },
+                .LineFeed => {
+                    try token_buffer.append(Token{
+                        .type = current_token_type,
+                        .content = try buffer.clone(),
+                    });
+
+                    current_token_type = TokenType.HeaderName;
+
+                    buffer.shrinkAndFree(0);
+                    try buffer.append(next);
+                },
+                else => try buffer.append(next),
+            },
         }
     }
 
-    if (!has_content_length) return ParseError.NoContentLength;
-    if (!has_json) return ParseError.NoJSON;
+    if (buffer.items.len > 0) {
+        try token_buffer.append(Token{
+            .type = TokenType.Content,
+            .content = try buffer.clone(),
+        });
+    }
 
-    return payload;
+    return token_buffer.items.len > 0;
+}
+
+pub fn parse(allocator: std.mem.Allocator, stdin: std.fs.File.Reader, _: *std.json.Parser) !void {
+    var buffer = std.ArrayList(Token).init(allocator);
+    defer {
+        for (buffer.items) |*token| token.deinit();
+        buffer.deinit();
+    }
+
+    while (true) {
+        for (buffer.items) |*token| token.deinit();
+
+        if (!try tokenizeInput(allocator, &buffer, stdin)) continue;
+
+        // TODO: Perform error checking on the tokenized input
+        for (buffer.items) |token| {
+            std.debug.print("{any} :: ", .{token.type});
+        }
+    }
 }
